@@ -23,6 +23,17 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+type freeModelUsageWindow struct {
+	UsedCents  int64 `json:"usedCents"`
+	LimitCents int64 `json:"limitCents"`
+	ResetsAt   int64 `json:"resetsAt"`
+}
+
+type freeModelUsageResponse struct {
+	Window5h   *freeModelUsageWindow `json:"window5h"`
+	WindowWeek *freeModelUsageWindow `json:"windowWeek"`
+}
+
 type UsageLogRepository interface {
 	// Create creates a usage log and returns whether it was actually inserted.
 	// inserted is false when the insert was skipped due to conflict (idempotent retries).
@@ -294,14 +305,14 @@ func NewAccountUsageService(
 // GetUsage 获取账号使用量
 // OAuth账号: 调用Anthropic API获取真实数据（需要profile scope），API响应缓存10分钟，窗口统计缓存1分钟
 // Setup Token账号: 根据session_window推算5h窗口，7d数据不可用（没有profile scope）
-// API Key账号: 不支持usage查询
+// API Key账号: OpenAI API Key 支持通过上游 usage cookie 查询窗口；其他 API Key 不支持
 func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64) (*UsageInfo, error) {
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("get account failed: %w", err)
 	}
 
-	if account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
+	if account.Platform == PlatformOpenAI && (account.Type == AccountTypeOAuth || account.Type == AccountTypeAPIKey) {
 		usage, err := s.getOpenAIUsage(ctx, account)
 		if err == nil {
 			s.tryClearRecoverableAccountError(ctx, account)
@@ -507,7 +518,11 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		usage.SevenDay = progress
 	}
 
-	if shouldRefreshOpenAICodexSnapshot(account, usage, now) && s.shouldProbeOpenAICodexSnapshot(account.ID, now) {
+	if account.Type == AccountTypeAPIKey {
+		if err := s.populateFreeModelUsage(ctx, account, usage, now); err != nil {
+			return nil, err
+		}
+	} else if shouldRefreshOpenAICodexSnapshot(account, usage, now) && s.shouldProbeOpenAICodexSnapshot(account.ID, now) {
 		if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
 			mergeAccountExtra(account, updates)
 			if usage.UpdatedAt == nil {
@@ -541,6 +556,122 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	}
 
 	return usage, nil
+}
+
+func (s *AccountUsageService) populateFreeModelUsage(ctx context.Context, account *Account, usage *UsageInfo, now time.Time) error {
+	if account == nil || usage == nil || !account.IsOpenAIApiKey() {
+		return nil
+	}
+
+	baseURL := strings.TrimSpace(account.GetOpenAIBaseURL())
+	usageCookie := strings.TrimSpace(account.GetCredential("usage_cookie"))
+	if usageCookie == "" || !strings.Contains(baseURL, "freemodel.dev") {
+		return nil
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, "https://freemodel.dev/api/usage", nil)
+	if err != nil {
+		return fmt.Errorf("create freemodel usage request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Cookie", usageCookie)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("Referer", "https://freemodel.dev/")
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	client, err := httppool.GetClient(httppool.Options{
+		ProxyURL:              proxyURL,
+		Timeout:               10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("build freemodel usage client: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("freemodel usage request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("freemodel usage returned status %d", resp.StatusCode)
+	}
+
+	var parsed freeModelUsageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return fmt.Errorf("decode freemodel usage response: %w", err)
+	}
+
+	if progress := buildFreeModelUsageProgress(parsed.Window5h, now); progress != nil {
+		usage.FiveHour = progress
+	}
+	if progress := buildFreeModelUsageProgress(parsed.WindowWeek, now); progress != nil {
+		usage.SevenDay = progress
+	}
+
+	updates := buildFreeModelUsageExtraUpdates(parsed, now)
+	if len(updates) > 0 {
+		mergeAccountExtra(account, updates)
+		if s.accountRepo != nil {
+			_ = s.accountRepo.UpdateExtra(ctx, account.ID, updates)
+		}
+	}
+
+	return nil
+}
+
+func buildFreeModelUsageProgress(window *freeModelUsageWindow, now time.Time) *UsageProgress {
+	if window == nil || window.LimitCents <= 0 {
+		return nil
+	}
+
+	utilization := 0.0
+	if window.LimitCents > 0 {
+		utilization = (float64(window.UsedCents) / float64(window.LimitCents)) * 100
+	}
+
+	resetAt := time.Unix(window.ResetsAt, 0)
+	remaining := int(time.Until(resetAt).Seconds())
+	if remaining < 0 {
+		remaining = 0
+	}
+	if !now.Before(resetAt) {
+		utilization = 0
+	}
+
+	return &UsageProgress{
+		Utilization:      utilization,
+		ResetsAt:         &resetAt,
+		RemainingSeconds: remaining,
+	}
+}
+
+func buildFreeModelUsageExtraUpdates(parsed freeModelUsageResponse, now time.Time) map[string]any {
+	updates := map[string]any{
+		"codex_usage_updated_at": now.Format(time.RFC3339),
+	}
+
+	if parsed.Window5h != nil && parsed.Window5h.LimitCents > 0 {
+		updates["codex_5h_used_percent"] = (float64(parsed.Window5h.UsedCents) / float64(parsed.Window5h.LimitCents)) * 100
+		updates["codex_5h_reset_at"] = time.Unix(parsed.Window5h.ResetsAt, 0).Format(time.RFC3339)
+		updates["codex_5h_reset_after_seconds"] = int(time.Until(time.Unix(parsed.Window5h.ResetsAt, 0)).Seconds())
+		updates["codex_5h_window_minutes"] = 300
+	}
+
+	if parsed.WindowWeek != nil && parsed.WindowWeek.LimitCents > 0 {
+		updates["codex_7d_used_percent"] = (float64(parsed.WindowWeek.UsedCents) / float64(parsed.WindowWeek.LimitCents)) * 100
+		updates["codex_7d_reset_at"] = time.Unix(parsed.WindowWeek.ResetsAt, 0).Format(time.RFC3339)
+		updates["codex_7d_reset_after_seconds"] = int(time.Until(time.Unix(parsed.WindowWeek.ResetsAt, 0)).Seconds())
+		updates["codex_7d_window_minutes"] = 10080
+	}
+
+	return updates
 }
 
 func shouldRefreshOpenAICodexSnapshot(account *Account, usage *UsageInfo, now time.Time) bool {

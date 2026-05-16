@@ -50,7 +50,7 @@
           <label class="input-label">{{ t('admin.accounts.apiKey') }}</label>
           <input
             v-model="editApiKey"
-            type="password"
+            type="text"
             class="input font-mono"
             autocomplete="new-password"
             data-1p-ignore
@@ -67,6 +67,16 @@
             "
           />
           <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
+        </div>
+        <div v-if="account.platform === 'openai'">
+          <label class="input-label">{{ t('admin.accounts.usageCookie') }}</label>
+          <textarea
+            v-model="editUsageCookie"
+            rows="4"
+            class="input font-mono"
+            :placeholder="t('admin.accounts.usageCookiePlaceholder')"
+          ></textarea>
+          <p class="input-hint">{{ t('admin.accounts.usageCookieHint') }}</p>
         </div>
 
         <!-- Model Restriction Section (不适用于 Antigravity) -->
@@ -2256,6 +2266,7 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+const editUsageCookie = ref('')
 // Bedrock credentials
 const editBedrockAccessKeyId = ref('')
 const editBedrockSecretAccessKey = ref('')
@@ -2566,6 +2577,12 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
   // Load intercept warmup requests setting (applies to all account types)
   const credentials = newAccount.credentials as Record<string, unknown> | undefined
+  editApiKey.value = ''
+  editUsageCookie.value = ''
+  editBedrockAccessKeyId.value = ''
+  editBedrockSecretAccessKey.value = ''
+  editBedrockSessionToken.value = ''
+  editBedrockApiKeyValue.value = ''
   interceptWarmupRequests.value = credentials?.intercept_warmup_requests === true
   autoPauseOnExpired.value = newAccount.auto_pause_on_expired === true
   editVertexProjectId.value = ''
@@ -2711,6 +2728,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
           ? 'https://generativelanguage.googleapis.com'
           : 'https://api.anthropic.com'
     editBaseUrl.value = (credentials.base_url as string) || platformDefaultUrl
+    editApiKey.value = (credentials.api_key as string) || ''
+    editUsageCookie.value = (credentials.usage_cookie as string) || ''
 
     // Load model mappings and detect mode
     const existingMappings = credentials.model_mapping as Record<string, string> | undefined
@@ -2759,11 +2778,11 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     editBedrockForceGlobal.value = (bedrockCreds.aws_force_global as string) === 'true'
 
     if (authMode === 'apikey') {
-      editBedrockApiKeyValue.value = ''
+      editBedrockApiKeyValue.value = (bedrockCreds.api_key as string) || ''
     } else {
       editBedrockAccessKeyId.value = (bedrockCreds.aws_access_key_id as string) || ''
-      editBedrockSecretAccessKey.value = ''
-      editBedrockSessionToken.value = ''
+      editBedrockSecretAccessKey.value = (bedrockCreds.aws_secret_access_key as string) || ''
+      editBedrockSessionToken.value = (bedrockCreds.aws_session_token as string) || ''
     }
 
     // Load pool mode for bedrock
@@ -2801,6 +2820,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   } else if (newAccount.type === 'upstream' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
     editBaseUrl.value = (credentials.base_url as string) || ''
+    editApiKey.value = (credentials.api_key as string) || ''
   } else if ((newAccount.platform === 'gemini' || newAccount.platform === 'anthropic') && newAccount.type === 'service_account' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
     editVertexProjectId.value = (credentials.project_id as string) || ''
@@ -2866,7 +2886,6 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     customErrorCodesEnabled.value = false
     selectedErrorCodes.value = []
   }
-  editApiKey.value = ''
 }
 
 async function loadTLSProfiles() {
@@ -3366,6 +3385,11 @@ const handleSubmit = async () => {
         newCredentials.model_mapping = currentCredentials.model_mapping
       }
       if (props.account.platform === 'openai') {
+        if (editUsageCookie.value.trim()) {
+          newCredentials.usage_cookie = editUsageCookie.value.trim()
+        } else {
+          delete newCredentials.usage_cookie
+        }
         const compactModelMapping = buildModelMappingObject('mapping', [], openAICompactModelMappings.value)
         if (compactModelMapping) {
           newCredentials.compact_model_mapping = compactModelMapping

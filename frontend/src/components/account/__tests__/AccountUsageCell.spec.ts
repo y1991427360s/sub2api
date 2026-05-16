@@ -206,7 +206,7 @@ describe('AccountUsageCell', () => {
 
     await flushPromises()
 
-    expect(getUsage).toHaveBeenCalledWith(2000)
+    expect(getUsage).toHaveBeenCalledWith(2000, undefined)
     expect(wrapper.text()).toContain('5h|15|300')
     expect(wrapper.text()).toContain('7d|77|300')
   })
@@ -267,7 +267,7 @@ describe('AccountUsageCell', () => {
 
     await flushPromises()
 
-    expect(getUsage).toHaveBeenCalledWith(2001)
+    expect(getUsage).toHaveBeenCalledWith(2001, undefined)
     // 单一数据源：始终使用 /usage API 返回值，忽略 codex 快照
     expect(wrapper.text()).toContain('5h|18|900')
     expect(wrapper.text()).toContain('7d|36|900')
@@ -338,7 +338,7 @@ describe('AccountUsageCell', () => {
 
     // 手动刷新再拉一次
     expect(getUsage).toHaveBeenCalledTimes(2)
-    expect(getUsage).toHaveBeenCalledWith(2010)
+    expect(getUsage).toHaveBeenCalledWith(2010, undefined)
     // 单一数据源：始终使用 /usage API 值
     expect(wrapper.text()).toContain('5h|18|900')
   })
@@ -393,9 +393,64 @@ describe('AccountUsageCell', () => {
 
 	await flushPromises()
 
-	expect(getUsage).toHaveBeenCalledWith(2002)
+	expect(getUsage).toHaveBeenCalledWith(2002, undefined)
 	expect(wrapper.text()).toContain('5h|0|27700')
 	expect(wrapper.text()).toContain('7d|0|27700')
+  })
+
+  it('OpenAI API Key 会显示 /usage 接口返回的 5h 和 7d 窗口', async () => {
+    getUsage.mockResolvedValue({
+      five_hour: {
+        utilization: 12,
+        resets_at: '2099-03-07T12:00:00Z',
+        remaining_seconds: 3600,
+        window_stats: {
+          requests: 2,
+          tokens: 1200,
+          cost: 0.02,
+          standard_cost: 0.02,
+          user_cost: 0.02
+        }
+      },
+      seven_day: {
+        utilization: 34,
+        resets_at: '2099-03-13T12:00:00Z',
+        remaining_seconds: 3600,
+        window_stats: {
+          requests: 8,
+          tokens: 5600,
+          cost: 0.08,
+          standard_cost: 0.08,
+          user_cost: 0.08
+        }
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2005,
+          platform: 'openai',
+          type: 'apikey',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ windowStats?.tokens }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(getUsage).toHaveBeenCalledWith(2005, undefined)
+    expect(wrapper.text()).toContain('5h|12|1200')
+    expect(wrapper.text()).toContain('7d|34|5600')
   })
 
   it('OpenAI OAuth 在行数据刷新但仍无 codex 快照时会重新拉取 usage', async () => {
@@ -525,7 +580,7 @@ describe('AccountUsageCell', () => {
 
 	await flushPromises()
 
-  expect(getUsage).toHaveBeenCalledWith(2004)
+  expect(getUsage).toHaveBeenCalledWith(2004, undefined)
   expect(wrapper.text()).toContain('5h|100|106540000')
   expect(wrapper.text()).toContain('7d|100|106540000')
   })

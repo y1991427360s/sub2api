@@ -105,8 +105,13 @@
       <div v-else class="text-xs text-gray-400">-</div>
     </template>
 
-    <!-- OpenAI OAuth accounts: single source from /usage API -->
-    <template v-else-if="account.platform === 'openai' && account.type === 'oauth'">
+    <!-- OpenAI OAuth/API Key accounts: single source from /usage API -->
+    <template
+      v-else-if="
+        account.platform === 'openai' &&
+        (account.type === 'oauth' || account.type === 'apikey')
+      "
+    >
       <div v-if="hasOpenAIUsageFallback" class="space-y-1">
         <UsageProgressBar
           v-if="usageInfo?.five_hour"
@@ -524,6 +529,7 @@ let visibilityObserver: IntersectionObserver | null = null
 const showUsageWindows = computed(() => {
   // Gemini: we can always compute local usage windows from DB logs (simulated quotas).
   if (props.account.platform === 'gemini') return true
+  if (props.account.platform === 'openai' && props.account.type === 'apikey') return true
   return props.account.type === 'oauth' || props.account.type === 'setup-token'
 })
 
@@ -538,7 +544,7 @@ const shouldFetchUsage = computed(() => {
     return props.account.type === 'oauth'
   }
   if (props.account.platform === 'openai') {
-    return props.account.type === 'oauth'
+    return props.account.type === 'oauth' || props.account.type === 'apikey'
   }
   return false
 })
@@ -559,7 +565,10 @@ const geminiUsageAvailable = computed(() => {
 })
 
 const hasOpenAIUsageFallback = computed(() => {
-  if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
+  if (
+    props.account.platform !== 'openai' ||
+    (props.account.type !== 'oauth' && props.account.type !== 'apikey')
+  ) return false
   return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day
 })
 
@@ -1186,9 +1195,12 @@ onMounted(() => {
 
 watch(openAIUsageRefreshKey, (nextKey, prevKey) => {
   if (!prevKey || nextKey === prevKey) return
-  if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
+  if (props.account.platform !== 'openai' || (props.account.type !== 'oauth' && props.account.type !== 'apikey')) return
 
-  requestAutoLoad()
+  _usageCache.delete(props.account.id)
+  loadUsage({ bypassCache: true }).catch((e) => {
+    console.error('Failed to refresh OpenAI usage after account update:', e)
+  })
 })
 
 watch(

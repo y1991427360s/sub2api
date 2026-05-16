@@ -3527,6 +3527,9 @@ export default {
       bedrockApiKeyLeaveEmpty: '留空以保持当前密钥',
       apiKeyIsRequired: 'API Key 是必需的',
       leaveEmptyToKeep: '留空以保持当前密钥',
+      usageCookie: 'Usage Cookie',
+      usageCookiePlaceholder: '粘贴用于 5h / 7d 窗口查询的 Cookie',
+      usageCookieHint: 'OpenAI Key 账号如需显示 5h / 7d 窗口，请在这里保存对应站点的 Cookie。',
       // Upstream type
       upstream: {
         baseUrl: '上游 Base URL',

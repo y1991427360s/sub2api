@@ -3386,6 +3386,9 @@ export default {
       bedrockApiKeyLeaveEmpty: 'Leave empty to keep current key',
       apiKeyIsRequired: 'API Key is required',
       leaveEmptyToKeep: 'Leave empty to keep current key',
+      usageCookie: 'Usage Cookie',
+      usageCookiePlaceholder: 'Paste the cookie used to query the 5h / 7d windows',
+      usageCookieHint: 'Save the site cookie here if an OpenAI API Key account needs the 5h / 7d usage windows.',
       // Upstream type
       upstream: {
         baseUrl: 'Upstream Base URL',

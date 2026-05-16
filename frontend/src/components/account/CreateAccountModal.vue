@@ -1030,7 +1030,7 @@
           <label class="input-label">{{ t('admin.accounts.apiKeyRequired') }}</label>
           <input
             v-model="apiKeyValue"
-            type="password"
+            type="text"
             required
             class="input font-mono"
             :placeholder="
@@ -1042,6 +1042,16 @@
             "
           />
           <p class="input-hint">{{ apiKeyHint }}</p>
+        </div>
+        <div v-if="form.platform === 'openai'">
+          <label class="input-label">{{ t('admin.accounts.usageCookie') }}</label>
+          <textarea
+            v-model="apiKeyUsageCookie"
+            rows="4"
+            class="input font-mono"
+            :placeholder="t('admin.accounts.usageCookiePlaceholder')"
+          ></textarea>
+          <p class="input-hint">{{ t('admin.accounts.usageCookieHint') }}</p>
         </div>
 
         <!-- Gemini API Key tier selection -->
@@ -3115,6 +3125,7 @@ import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
 import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
 import type {
+  Account,
   Proxy,
   AdminGroup,
   AccountPlatform,
@@ -3187,6 +3198,7 @@ interface Props {
   show: boolean
   proxies: Proxy[]
   groups: AdminGroup[]
+  prefillAccount?: Account | null
 }
 
 const props = defineProps<Props>()
@@ -3255,6 +3267,7 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
+const apiKeyUsageCookie = ref('')
 const editQuotaLimit = ref<number | null>(null)
 const editQuotaDailyLimit = ref<number | null>(null)
 const editQuotaWeeklyLimit = ref<number | null>(null)
@@ -3500,6 +3513,101 @@ const form = reactive({
   expires_at: null as number | null
 })
 
+const applyPrefillAccount = (account: Account) => {
+  const credentials = (account.credentials || {}) as Record<string, unknown>
+  const extra = (account.extra || {}) as Record<string, unknown>
+
+  form.name = account.name ? `${account.name} Copy` : ''
+  form.notes = account.notes || ''
+  form.platform = account.platform
+  form.proxy_id = account.proxy_id
+  form.concurrency = account.concurrency
+  form.load_factor = account.load_factor ?? null
+  form.priority = account.priority
+  form.rate_multiplier = account.rate_multiplier ?? 1
+  form.group_ids = [...(account.group_ids || [])]
+  form.expires_at = account.expires_at ?? null
+  autoPauseOnExpired.value = account.auto_pause_on_expired === true
+  interceptWarmupRequests.value = credentials.intercept_warmup_requests === true
+
+  if (account.platform === 'antigravity') {
+    mixedScheduling.value = extra.mixed_scheduling === true
+    allowOverages.value = extra.allow_overages === true
+    antigravityAccountType.value = account.type === 'apikey' ? 'upstream' : 'oauth'
+    accountCategory.value = account.type === 'apikey' ? 'apikey' : 'oauth-based'
+    upstreamBaseUrl.value = typeof credentials.base_url === 'string' ? credentials.base_url : ''
+    upstreamApiKey.value = typeof credentials.api_key === 'string' ? credentials.api_key : ''
+    antigravityModelRestrictionMode.value = 'mapping'
+    const rawAgMapping = credentials.model_mapping as Record<string, string> | undefined
+    antigravityModelMappings.value = rawAgMapping
+      ? Object.entries(rawAgMapping).map(([from, to]) => ({ from, to }))
+      : []
+    return
+  }
+
+  if (account.platform === 'anthropic' && account.type === 'bedrock') {
+    accountCategory.value = 'bedrock'
+    bedrockAuthMode.value = credentials.auth_mode === 'apikey' ? 'apikey' : 'sigv4'
+    bedrockRegion.value = typeof credentials.aws_region === 'string' ? credentials.aws_region : 'us-east-1'
+    bedrockForceGlobal.value = credentials.aws_force_global === 'true'
+    bedrockAccessKeyId.value = typeof credentials.aws_access_key_id === 'string' ? credentials.aws_access_key_id : ''
+    bedrockSecretAccessKey.value = typeof credentials.aws_secret_access_key === 'string' ? credentials.aws_secret_access_key : ''
+    bedrockSessionToken.value = typeof credentials.aws_session_token === 'string' ? credentials.aws_session_token : ''
+    bedrockApiKeyValue.value = typeof credentials.api_key === 'string' ? credentials.api_key : ''
+  } else if ((account.platform === 'gemini' || account.platform === 'anthropic') && account.type === 'service_account') {
+    accountCategory.value = 'service_account'
+    vertexProjectId.value = typeof credentials.project_id === 'string' ? credentials.project_id : ''
+    vertexClientEmail.value = typeof credentials.client_email === 'string' ? credentials.client_email : ''
+    vertexLocation.value =
+      typeof credentials.location === 'string'
+        ? credentials.location
+        : typeof credentials.vertex_location === 'string'
+          ? credentials.vertex_location
+          : 'global'
+  } else if (account.type === 'apikey') {
+    accountCategory.value = 'apikey'
+    apiKeyBaseUrl.value =
+      typeof credentials.base_url === 'string'
+        ? credentials.base_url
+        : account.platform === 'openai'
+          ? 'https://api.openai.com'
+          : account.platform === 'gemini'
+            ? 'https://generativelanguage.googleapis.com'
+            : 'https://api.anthropic.com'
+    apiKeyValue.value = typeof credentials.api_key === 'string' ? credentials.api_key : ''
+    apiKeyUsageCookie.value = typeof credentials.usage_cookie === 'string' ? credentials.usage_cookie : ''
+  } else {
+    accountCategory.value = 'oauth-based'
+    addMethod.value = account.type === 'setup-token' ? 'setup-token' : 'oauth'
+  }
+
+  poolModeEnabled.value = credentials.pool_mode === true
+  poolModeRetryCount.value = normalizePoolModeRetryCount(
+    Number(credentials.pool_mode_retry_count ?? DEFAULT_POOL_MODE_RETRY_COUNT)
+  )
+  customErrorCodesEnabled.value = credentials.custom_error_codes_enabled === true
+  selectedErrorCodes.value = Array.isArray(credentials.custom_error_codes)
+    ? (credentials.custom_error_codes as number[]).filter((value) => Number.isFinite(value))
+    : []
+
+  openaiPassthroughEnabled.value = extra.openai_passthrough === true || extra.openai_oauth_passthrough === true
+  anthropicPassthroughEnabled.value = extra.anthropic_passthrough === true
+  codexCLIOnlyEnabled.value = extra.codex_cli_only === true
+  openAICompactMode.value =
+    extra.openai_compact_mode === 'force_on' || extra.openai_compact_mode === 'force_off'
+      ? extra.openai_compact_mode
+      : 'auto'
+
+  const modelMapping = credentials.model_mapping as Record<string, string> | undefined
+  if (modelMapping && typeof modelMapping === 'object') {
+    const entries = Object.entries(modelMapping)
+    const isWhitelistMode = entries.length > 0 && entries.every(([from, to]) => from === to)
+    modelRestrictionMode.value = isWhitelistMode ? 'whitelist' : 'mapping'
+    allowedModels.value = isWhitelistMode ? entries.map(([from]) => from) : []
+    modelMappings.value = isWhitelistMode ? [] : entries.map(([from, to]) => ({ from, to }))
+  }
+}
+
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
   // Antigravity upstream 类型不需要 OAuth 流程
@@ -3543,6 +3651,7 @@ watch(
   () => props.show,
   (newVal) => {
     if (newVal) {
+      resetForm()
       // Load TLS fingerprint profiles
       adminAPI.tlsFingerprintProfiles.list()
         .then(profiles => { tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name })) })
@@ -3560,6 +3669,9 @@ watch(
         antigravityWhitelistModels.value = []
         antigravityModelMappings.value = []
         antigravityModelRestrictionMode.value = 'mapping'
+      }
+      if (props.prefillAccount) {
+        applyPrefillAccount(props.prefillAccount)
       }
     } else {
       resetForm()
@@ -4014,6 +4126,7 @@ const resetForm = () => {
   addMethod.value = 'oauth'
   apiKeyBaseUrl.value = 'https://api.anthropic.com'
   apiKeyValue.value = ''
+  apiKeyUsageCookie.value = ''
   editQuotaLimit.value = null
   editQuotaDailyLimit.value = null
   editQuotaWeeklyLimit.value = null
@@ -4397,6 +4510,9 @@ const handleSubmit = async () => {
   const credentials: Record<string, unknown> = {
     base_url: apiKeyBaseUrl.value.trim() || defaultBaseUrl,
     api_key: apiKeyValue.value.trim()
+  }
+  if (form.platform === 'openai' && apiKeyUsageCookie.value.trim()) {
+    credentials.usage_cookie = apiKeyUsageCookie.value.trim()
   }
   if (form.platform === 'gemini') {
     credentials.tier_id = geminiTierAIStudio.value

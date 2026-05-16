@@ -237,4 +237,34 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.codex_image_generation_bridge).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('codex_image_generation_bridge_enabled')
   })
+
+  it('shows visible OpenAI API key and usage cookie, and persists usage cookie changes', async () => {
+    const account = buildAccount()
+    account.credentials = {
+      ...account.credentials,
+      usage_cookie: 'bm_session=test-cookie'
+    }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    const visibleApiKeyInput = wrapper.findAll('input[type="text"].font-mono').find((node) =>
+      node.attributes('placeholder') === 'sk-proj-...'
+    )
+    expect(visibleApiKeyInput).toBeTruthy()
+
+    const cookieTextarea = wrapper.findAll('textarea.font-mono').find((node) =>
+      (node.element as HTMLTextAreaElement).value.includes('bm_session=')
+    )!
+    expect((cookieTextarea.element as HTMLTextAreaElement).value).toBe('bm_session=test-cookie')
+
+    await cookieTextarea.setValue('bm_session=updated-cookie')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.usage_cookie).toBe('bm_session=updated-cookie')
+  })
 })
